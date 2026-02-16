@@ -527,6 +527,14 @@ def generate_html(products):
 
     print(f"\n✅ HTML salvat: {os.path.abspath(HTML_FILE)}")
 
+    # Auto-copy to public/ for Netlify deployment
+    import shutil
+    public_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "public")
+    os.makedirs(public_dir, exist_ok=True)
+    netlify_path = os.path.join(public_dir, "index.html")
+    shutil.copy2(HTML_FILE, netlify_path)
+    print(f"🚀 Netlify: copiat în {netlify_path}")
+
 
 def main():
     print("=" * 60)

@@ -1,4 +1,4 @@
-# Output files (images, reports, xlsx)
+# Output files (images, xlsx) - but NOT public/
 output/
 
 # Logs
