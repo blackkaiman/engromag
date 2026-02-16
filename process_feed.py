@@ -3,7 +3,7 @@ MerchantPro Product Feed Processor (Excel)
 - Downloads product images from XLSX feed
 - Detects white backgrounds -> skip
 - Detects already 1:1 images -> skip
-- Uses OpenAI outpainting for non-white, non-square backgrounds
+- Uses GPT-4o Responses API (ChatGPT Premium quality) for non-white, non-square backgrounds
 - Saves results in new Excel file with status + new image path
 """
 
@@ -97,55 +97,73 @@ def extend_to_square(img: Image.Image, bg_color: tuple = None) -> Image.Image:
 
 
 def extend_to_square_transparent(img: Image.Image) -> Image.Image:
-    """Extend image to square with transparent areas where AI should generate."""
+    """Pune imaginea pe canvas pătrat transparent. Zonele transparente = AI completează."""
     w, h = img.size
     max_dim = max(w, h)
-    # RGBA with transparent background
     square = Image.new("RGBA", (max_dim, max_dim), (0, 0, 0, 0))
     img_rgba = img.convert("RGBA")
     square.paste(img_rgba, ((max_dim - w) // 2, (max_dim - h) // 2))
-    # Add tiny feathered edge for smooth blending (minimal to preserve original content)
-    fade = 2  # pixels of feather - keep very small to not eat into original
-    arr = np.array(square)
-    ox, oy = (max_dim - w) // 2, (max_dim - h) // 2
-    for i in range(fade):
-        alpha = int(255 * (i / fade))
-        if oy + i < max_dim:
-            arr[oy + i, ox:ox+w, 3] = np.minimum(arr[oy + i, ox:ox+w, 3], alpha)
-        if oy + h - 1 - i >= 0:
-            arr[oy + h - 1 - i, ox:ox+w, 3] = np.minimum(arr[oy + h - 1 - i, ox:ox+w, 3], alpha)
-        if ox + i < max_dim:
-            arr[oy:oy+h, ox + i, 3] = np.minimum(arr[oy:oy+h, ox + i, 3], alpha)
-        if ox + w - 1 - i >= 0:
-            arr[oy:oy+h, ox + w - 1 - i, 3] = np.minimum(arr[oy:oy+h, ox + w - 1 - i, 3], alpha)
-    square = Image.fromarray(arr, "RGBA")
     return square.resize((IMAGE_SIZE, IMAGE_SIZE), Image.LANCZOS)
 
 
-def outpaint_image(img_square: Image.Image, title: str) -> Image.Image | None:
-    """Use OpenAI gpt-image-1 to outpaint. Image has transparent areas = AI fills."""
+def get_bg_description(img: Image.Image) -> str:
+    """Analyze background to create accurate description for prompt."""
+    arr = np.array(img)
+    h, w = arr.shape[:2]
+    d = 15
+    edges = np.concatenate([
+        arr[:d, :, :].reshape(-1, 3),
+        arr[h-d:, :, :].reshape(-1, 3),
+        arr[d:h-d, :d, :].reshape(-1, 3),
+        arr[d:h-d, w-d:, :].reshape(-1, 3),
+    ])
+    avg = edges.mean(axis=0)
+    r, g, b = int(avg[0]), int(avg[1]), int(avg[2])
+    brightness = (r + g + b) / 3
+    
+    if brightness > 230:
+        return "white/off-white clean surface"
+    elif brightness > 180:
+        return "light gray/beige clean surface"
+    elif r > g and r > b:
+        return "warm-toned surface"
+    else:
+        return f"plain surface (approximately RGB {r},{g},{b})"
+
+
+def outpaint_gpt4o(img: Image.Image, title: str) -> Image.Image | None:
+    """
+    gpt-image-1.5 (BEST model) cu quality high — extensie naturală fără deformare.
+    Cheia: descriem exact cum arată background-ul și cerem DOAR continuare simplă.
+    """
+    # Create transparent canvas
+    square = extend_to_square_transparent(img)
+
     img_buf = io.BytesIO()
-    img_square.save(img_buf, format="PNG")
+    square.save(img_buf, format="PNG")
     img_buf.seek(0)
     img_buf.name = "image.png"
 
+    bg_desc = get_bg_description(img)
+
     prompt = (
-        f"Extend the background of this product photo to fill the transparent areas of the square canvas. "
-        f"CRITICAL: PRESERVE every single element that already exists in the image - do NOT remove, alter, or simplify "
-        f"any existing objects, decorations, flowers, patterns, textures or background details. "
-        f"Keep the product and ALL existing background elements exactly as they are. "
-        f"Only fill the transparent/empty areas by continuing the same background style, colors, textures and patterns "
-        f"that are visible at the edges of the existing image. "
-        f"The result should look like the original photo was simply taken with a wider frame."
+        f"Fill the transparent areas with a plain, clean {bg_desc}. "
+        f"CRITICAL INSTRUCTIONS: "
+        f"The transparent areas should contain ONLY the same plain background surface — "
+        f"absolutely NO new objects, NO flowers, NO decorative elements, NO patterns, NO embellishments. "
+        f"Just extend the flat, clean background surface color and texture. "
+        f"Think of it as simply extending the table/surface the product sits on. "
+        f"Keep every existing element in the image completely untouched."
     )
 
     try:
-        logger.info(f"  Apel OpenAI gpt-image-1 outpainting...")
+        logger.info(f"  🎨 gpt-image-1.5 HIGH outpainting (bg: {bg_desc})...")
         result = client.images.edit(
-            model="gpt-image-1",
+            model="gpt-image-1.5",
             image=img_buf,
             prompt=prompt,
             size=f"{IMAGE_SIZE}x{IMAGE_SIZE}",
+            quality="high",
             n=1,
         )
 
@@ -159,7 +177,7 @@ def outpaint_image(img_square: Image.Image, title: str) -> Image.Image | None:
         logger.error("  Raspuns gol de la API")
         return None
     except Exception as e:
-        logger.error(f"  Eroare OpenAI: {e}")
+        logger.error(f"  Eroare API: {e}")
         return None
 
 
@@ -286,35 +304,26 @@ def main():
             counts["skip"] += 1
             continue
 
-        # Non-square + non-white bg -> AI Outpainting
-        logger.info(f"  -> AI OUTPAINTING (non-patrat {w}x{h}, fundal colorat)")
-        square_img = extend_to_square_transparent(img)
+        # Non-square + non-white bg -> AI Outpainting with GPT-4o Premium
+        logger.info(f"  -> AI OUTPAINTING gpt-image-1.5 HIGH (non-patrat {w}x{h}, fundal colorat)")
 
-        result_img = outpaint_image(square_img, title)
+        result_img = outpaint_gpt4o(img, title)
 
         if result_img is not None:
-            # COMPOSITE: paste original back on top so AI NEVER affects the product
-            max_dim = max(w, h)
-            scale = IMAGE_SIZE / max_dim
-            orig_resized = img.resize((round(w * scale), round(h * scale)), Image.LANCZOS)
-            ox = (IMAGE_SIZE - orig_resized.width) // 2
-            oy = (IMAGE_SIZE - orig_resized.height) // 2
-            result_img.paste(orig_resized, (ox, oy))
-            logger.info(f"  🔒 Original lipit înapoi - produs protejat 100%")
-
             path = save_img(result_img, filename)
             ws.cell(row=row_idx, column=col_new_img, value=path)
             ws.cell(row=row_idx, column=col_status, value="ai_generated")
-            ws.cell(row=row_idx, column=col_reason, value=f"Outpainting AI reusit ({w}x{h} -> 1024x1024)")
+            ws.cell(row=row_idx, column=col_reason, value=f"gpt-image-1 outpainting ({w}x{h} -> 1024x1024)")
             counts["ai_generated"] += 1
             logger.info(f"  REUSIT!")
         else:
-            path = save_img(square_img, filename)
+            square_fallback = extend_to_square(img, bg_color=border_color)
+            path = save_img(square_fallback, filename)
             ws.cell(row=row_idx, column=col_new_img, value=path)
             ws.cell(row=row_idx, column=col_status, value="ai_failed")
-            ws.cell(row=row_idx, column=col_reason, value="Eroare API OpenAI - salvat cu padding alb")
+            ws.cell(row=row_idx, column=col_reason, value="Eroare GPT-4o - salvat cu padding")
             counts["ai_failed"] += 1
-            logger.info(f"  ESUAT - salvat cu padding alb")
+            logger.info(f"  ESUAT - salvat cu padding")
 
     # 3. Save results
     output_path = os.path.join(OUTPUT_DIR, OUTPUT_EXCEL)

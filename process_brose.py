@@ -1,10 +1,11 @@
 """
 Procesare dedicată pentru broșele importante.
-Descarcă imaginile, le procesează cu AI outpainting, salvează în output/.
+Folosește gpt-image-1 Images API cu prompt optimizat pentru extensie naturală.
+Trimite imaginea pe canvas transparent - AI completează natural fără decorațiuni.
 """
 
 import os, io, base64, logging, requests, numpy as np, openpyxl
-from PIL import Image, ImageDraw
+from PIL import Image
 from openai import OpenAI
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
@@ -31,74 +32,76 @@ def download_image(url):
         return None
 
 
-def get_border_color(img):
+def extend_to_square_transparent(img):
+    """Pune imaginea pe canvas pătrat transparent. Zonele transparente = AI completează."""
+    w, h = img.size
+    max_dim = max(w, h)
+    square = Image.new("RGBA", (max_dim, max_dim), (0, 0, 0, 0))
+    img_rgba = img.convert("RGBA")
+    square.paste(img_rgba, ((max_dim - w) // 2, (max_dim - h) // 2))
+    return square.resize((IMAGE_SIZE, IMAGE_SIZE), Image.LANCZOS)
+
+
+def get_bg_description(img):
+    """Analyze background to create accurate description for prompt."""
     arr = np.array(img)
     h, w = arr.shape[:2]
-    d = 10
-    border = np.concatenate([
+    d = 15
+    # Sample edges
+    edges = np.concatenate([
         arr[:d, :, :].reshape(-1, 3),
         arr[h-d:, :, :].reshape(-1, 3),
         arr[d:h-d, :d, :].reshape(-1, 3),
         arr[d:h-d, w-d:, :].reshape(-1, 3),
     ])
-    avg = border.mean(axis=0)
-    return (int(round(avg[0])), int(round(avg[1])), int(round(avg[2])))
+    avg = edges.mean(axis=0)
+    r, g, b = int(avg[0]), int(avg[1]), int(avg[2])
+    brightness = (r + g + b) / 3
+    
+    if brightness > 230:
+        return "white/off-white clean surface"
+    elif brightness > 180:
+        return "light gray/beige clean surface"
+    elif r > g and r > b:
+        return "warm-toned surface"
+    else:
+        return f"plain surface (approximately RGB {r},{g},{b})"
 
 
-def extend_to_square_transparent(img):
-    """Extend image to square with transparent areas where AI should generate."""
-    w, h = img.size
-    max_dim = max(w, h)
-    # RGBA with transparent background
-    square = Image.new("RGBA", (max_dim, max_dim), (0, 0, 0, 0))
-    img_rgba = img.convert("RGBA")
-    square.paste(img_rgba, ((max_dim - w) // 2, (max_dim - h) // 2))
-    # Add tiny feathered edge for smooth blending (minimal to preserve original content)
-    fade = 2  # pixels of feather - keep very small to not eat into original
-    arr = np.array(square)
-    ox, oy = (max_dim - w) // 2, (max_dim - h) // 2
-    for i in range(fade):
-        alpha = int(255 * (i / fade))
-        # Top edge of original
-        if oy + i < max_dim:
-            arr[oy + i, ox:ox+w, 3] = np.minimum(arr[oy + i, ox:ox+w, 3], alpha)
-        # Bottom edge of original
-        if oy + h - 1 - i >= 0:
-            arr[oy + h - 1 - i, ox:ox+w, 3] = np.minimum(arr[oy + h - 1 - i, ox:ox+w, 3], alpha)
-        # Left edge of original
-        if ox + i < max_dim:
-            arr[oy:oy+h, ox + i, 3] = np.minimum(arr[oy:oy+h, ox + i, 3], alpha)
-        # Right edge of original
-        if ox + w - 1 - i >= 0:
-            arr[oy:oy+h, ox + w - 1 - i, 3] = np.minimum(arr[oy:oy+h, ox + w - 1 - i, 3], alpha)
-    square = Image.fromarray(arr, "RGBA")
-    return square.resize((IMAGE_SIZE, IMAGE_SIZE), Image.LANCZOS)
-
-
-def outpaint_image(img_square, title):
-    """Use OpenAI gpt-image-1 to outpaint. Image has transparent areas = AI fills."""
+def outpaint_image(img, title):
+    """
+    gpt-image-1.5 (BEST model) cu quality high — extensie naturală fără deformare.
+    Cheia: descriem exact cum arată background-ul și cerem DOAR continuare simplă.
+    """
+    # Create transparent canvas
+    square = extend_to_square_transparent(img)
+    
     img_buf = io.BytesIO()
-    img_square.save(img_buf, format="PNG")
+    square.save(img_buf, format="PNG")
     img_buf.seek(0)
     img_buf.name = "image.png"
 
+    bg_desc = get_bg_description(img)
+    w, h = img.size
+
     prompt = (
-        f"Extend the background of this product photo to fill the transparent areas of the square canvas. "
-        f"CRITICAL: PRESERVE every single element that already exists in the image - do NOT remove, alter, or simplify "
-        f"any existing objects, decorations, flowers, patterns, textures or background details. "
-        f"Keep the product and ALL existing background elements exactly as they are. "
-        f"Only fill the transparent/empty areas by continuing the same background style, colors, textures and patterns "
-        f"that are visible at the edges of the existing image. "
-        f"The result should look like the original photo was simply taken with a wider frame."
+        f"Fill the transparent areas with a plain, clean {bg_desc}. "
+        f"CRITICAL INSTRUCTIONS: "
+        f"The transparent areas should contain ONLY the same plain background surface — "
+        f"absolutely NO new objects, NO flowers, NO decorative elements, NO patterns, NO embellishments. "
+        f"Just extend the flat, clean background surface color and texture. "
+        f"Think of it as simply extending the table/surface the product sits on. "
+        f"Keep every existing element in the image completely untouched."
     )
 
     try:
-        logger.info(f"  Apel OpenAI gpt-image-1 outpainting...")
+        logger.info(f"  🎨 gpt-image-1.5 HIGH outpainting (bg: {bg_desc})...")
         result = client.images.edit(
-            model="gpt-image-1",
+            model="gpt-image-1.5",
             image=img_buf,
             prompt=prompt,
             size=f"{IMAGE_SIZE}x{IMAGE_SIZE}",
+            quality="high",
             n=1,
         )
         if result.data:
@@ -109,13 +112,13 @@ def outpaint_image(img_square, title):
                 return Image.open(io.BytesIO(requests.get(d.url, timeout=30).content)).convert("RGB")
         return None
     except Exception as e:
-        logger.error(f"  Eroare OpenAI: {e}")
+        logger.error(f"  Eroare API: {e}")
         return None
 
 
 def main():
     logger.info("=" * 60)
-    logger.info("PROCESARE BROSE IMPORTANTE")
+    logger.info("PROCESARE BROSE — gpt-image-1.5 HIGH QUALITY")
     logger.info(f"  SKU-uri: {TARGET_SKUS}")
     logger.info("=" * 60)
 
@@ -172,25 +175,12 @@ def main():
         orig_path = os.path.join(OUTPUT_DIR, orig_filename)
         img.save(orig_path, format="PNG")
 
-        # Extend to square with transparent edges (AI fills transparent areas)
-        square_img = extend_to_square_transparent(img)
-
-        # AI outpainting with gpt-image-1
-        result_img = outpaint_image(square_img, p["title"])
+        # gpt-image-1 outpainting cu prompt optimizat — extensie naturală
+        result_img = outpaint_image(img, p["title"])
 
         if result_img is not None:
-            # COMPOSITE: paste original back on top so AI NEVER affects the product
-            max_dim = max(w, h)
-            # Scale original to match the proportion inside IMAGE_SIZE
-            scale = IMAGE_SIZE / max_dim
-            orig_resized = img.resize((round(w * scale), round(h * scale)), Image.LANCZOS)
-            ox = (IMAGE_SIZE - orig_resized.width) // 2
-            oy = (IMAGE_SIZE - orig_resized.height) // 2
-            result_img.paste(orig_resized, (ox, oy))
-            logger.info(f"  🔒 Original lipit înapoi - produs protejat 100%")
-
             result_img.save(filepath, format="PNG")
-            logger.info(f"  ✅ REUSIT! Salvat: {filepath}")
+            logger.info(f"  ✅ SALVAT: {filepath}")
             results.append({
                 "sku": p["sku"],
                 "title": p["title"],
@@ -199,8 +189,20 @@ def main():
                 "status": "success"
             })
         else:
-            square_img.save(filepath, format="PNG")
-            logger.info(f"  ❌ ESUAT - salvat cu padding alb: {filepath}")
+            # Fallback: simple padding with border color
+            logger.info(f"  ⚠️ Fallback: padding simplu")
+            import numpy as np
+            max_dim = max(w, h)
+            arr = np.array(img)
+            hh, ww = arr.shape[:2]
+            d = 10
+            border = np.concatenate([arr[:d,:,:].reshape(-1,3), arr[hh-d:,:,:].reshape(-1,3)])
+            bg = tuple(int(x) for x in border.mean(axis=0))
+            square = Image.new("RGB", (max_dim, max_dim), bg)
+            square.paste(img, ((max_dim - w) // 2, (max_dim - h) // 2))
+            square = square.resize((IMAGE_SIZE, IMAGE_SIZE), Image.LANCZOS)
+            square.save(filepath, format="PNG")
+            logger.info(f"  💾 Salvat cu padding: {filepath}")
             results.append({
                 "sku": p["sku"],
                 "title": p["title"],
