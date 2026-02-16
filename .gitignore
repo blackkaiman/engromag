@@ -1,0 +1,16 @@
+# Output files (images, reports, xlsx)
+output/
+
+# Logs
+run_log*.txt
+brose_log.txt
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+
+# Old scripts
+generate_reports.py
