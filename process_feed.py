@@ -293,6 +293,15 @@ def main():
         result_img = outpaint_image(square_img, title)
 
         if result_img is not None:
+            # COMPOSITE: paste original back on top so AI NEVER affects the product
+            max_dim = max(w, h)
+            scale = IMAGE_SIZE / max_dim
+            orig_resized = img.resize((round(w * scale), round(h * scale)), Image.LANCZOS)
+            ox = (IMAGE_SIZE - orig_resized.width) // 2
+            oy = (IMAGE_SIZE - orig_resized.height) // 2
+            result_img.paste(orig_resized, (ox, oy))
+            logger.info(f"  🔒 Original lipit înapoi - produs protejat 100%")
+
             path = save_img(result_img, filename)
             ws.cell(row=row_idx, column=col_new_img, value=path)
             ws.cell(row=row_idx, column=col_status, value="ai_generated")

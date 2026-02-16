@@ -179,6 +179,16 @@ def main():
         result_img = outpaint_image(square_img, p["title"])
 
         if result_img is not None:
+            # COMPOSITE: paste original back on top so AI NEVER affects the product
+            max_dim = max(w, h)
+            # Scale original to match the proportion inside IMAGE_SIZE
+            scale = IMAGE_SIZE / max_dim
+            orig_resized = img.resize((round(w * scale), round(h * scale)), Image.LANCZOS)
+            ox = (IMAGE_SIZE - orig_resized.width) // 2
+            oy = (IMAGE_SIZE - orig_resized.height) // 2
+            result_img.paste(orig_resized, (ox, oy))
+            logger.info(f"  🔒 Original lipit înapoi - produs protejat 100%")
+
             result_img.save(filepath, format="PNG")
             logger.info(f"  ✅ REUSIT! Salvat: {filepath}")
             results.append({
