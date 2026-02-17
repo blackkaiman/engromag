@@ -12,6 +12,7 @@ brose_log.txt
 # Python
 __pycache__/
 *.pyc
+.venv/
 
 # Old scripts
 generate_reports.py
