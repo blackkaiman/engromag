@@ -3,3 +3,4 @@ Pillow
 numpy
 lxml
 openai
+openpyxl

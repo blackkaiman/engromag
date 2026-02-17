@@ -1,5 +1,6 @@
 # Output files (images, xlsx) - but NOT public/
 output/
+output_safe/
 
 # Logs
 run_log*.txt

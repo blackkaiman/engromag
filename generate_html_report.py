@@ -14,9 +14,9 @@ from PIL import Image
 # CONFIG
 # ============================================================
 FEED_URL = "https://www.engromag.ro/feed/products/ec219e068cd4552bf8759292992425a6"
-OUTPUT_DIR = "output"
+OUTPUT_DIR = "output_safe"
 MAX_PRODUCTS = 200
-HTML_FILE = "output/raport_before_after.html"
+HTML_FILE = "output_safe/raport_before_after.html"
 
 
 def load_feed():
@@ -50,11 +50,14 @@ def load_feed():
 
 
 def find_output_image(nr, sku, pid):
-    filename = f"product_{nr:03d}_{sku or pid}.png"
-    safe = "".join(c if c.isalnum() or c in ".-_" else "_" for c in filename)
-    path = os.path.join(OUTPUT_DIR, safe)
-    if os.path.exists(path):
-        return path
+    # process_feed.py uses row number: product_{row}.png
+    # nr = row - 1 (0-indexed), row = nr + 1
+    row = nr + 1
+    for candidate in [f"product_{row}.png", f"product_{nr:03d}_{sku or pid}.png"]:
+        safe = "".join(c if c.isalnum() or c in ".-_" else "_" for c in candidate)
+        path = os.path.join(OUTPUT_DIR, safe)
+        if os.path.exists(path):
+            return path
     return None
 
 
